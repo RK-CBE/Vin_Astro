@@ -8,9 +8,10 @@
   <script src="js/constants.js"></script>
   <script src="js/astro_calc.js"></script>
   <script src="js/charts.js"></script>
+  <script src="js/cities.js"></script>
+  <script src="js/sunrise.js"></script>
   <script src="js/dignity_and_table.js"></script>
   <script src="js/dashas.js"></script>
-  <script src="js/cities.js"></script>
   <script src="js/date_utils.js"></script>
   <script src="js/planets.js"></script>
   <script src="js/planterms2.js"></script>
@@ -167,50 +168,132 @@
       document.getElementById('minute').value = minute;
     }
 
+function displayVedicInfo(year, month, day, hour, minute, city) {
+  const { sunriseStr, sunsetStr, sunriseMinutes, sunsetMinutes } =
+          getLocalSunriseSunset(year, month, day, city);
+
+  const dateStr = `${day}-${month}-${year}`;
+  const birthTimeStr = formatAMPM(hour, minute);
+
+  // Day of week 0=Sun…6=Sat in JS
+  const weekdayIndex = new Date(year, month-1, day).getDay();
+  const vedicWeekday = determineVedicWeekdayLocal(
+    hour, minute, sunriseMinutes, sunsetMinutes, weekdayIndex
+  );
+
+  document.getElementById('vedicInfo').innerHTML = `
+    <p>பிறந்த தேதி: ${dateStr}, நேரம்: ${birthTimeStr}</p>
+    <p>சூரிய உதயம்: ${sunriseStr}, அஸ்தமனம்: ${sunsetStr}</p>
+    <p>வேதவழி நாள் பொழுது: ${vedicWeekday}</p>
+` ;
+}
+
+
+
     // Main driver function
-    function calculatePositions() {
-      var year = document.getElementById('year').value;
-      var month = document.getElementById('month').value;
-      var day = document.getElementById('day').value;
-      var hour = parseInt(document.getElementById('hour').value);
-      var minutes = parseInt(document.getElementById('minute').value);
-      var city = document.getElementById("city").value;
-      var cityInfo = getCityInfo(city);
 
-      if (!cityInfo) {
-        alert("City information not available.");
-        return;
-      }
-      var timeData = extractTimeData(hour, minutes, cityInfo);
-      var dateData = calculateDateData(year, month, day, timeData.time);
+// Refactored calculatePositions with helpers and ES6 syntax
+function calculatePositions() {
+  // 1. Gather inputs
+  const year    = Number(document.getElementById('year').value);
+  const month   = Number(document.getElementById('month').value);
+  const day     = Number(document.getElementById('day').value);
+  const hour    = Number(document.getElementById('hour').value);
+  const minutes = Number(document.getElementById('minute').value);
+  const city    = document.getElementById('city').value;
 
-      var planetaryPositions = calculatePlanetaryPositions(dateData.t, timeData, cityInfo);
+  const cityInfo = getCityInfo(city);
+  if (!cityInfo) {
+    alert('City information not available.');
+    return;
+  }
 
-      // Compute positions 12 hours later to check retrograde
-      var halfDayInT = 0.5 / 36525; // 0.5 day in Julian Centuries
-      var planetaryPositionsLater =
-          calculatePlanetaryPositions(dateData.t + halfDayInT, timeData, cityInfo);
+  // 2. Compute time and date data
+  const timeData = extractTimeData(hour, minutes, cityInfo);
+  const dateData = calculateDateData(year, month, day, timeData.time);
 
-      displayChart(planetaryPositions, year, month, day, hour, minutes);
+  // 3. Calculate planetary positions for birth moment
+  const planetaryPositions = calculatePlanetaryPositions(dateData.t, timeData, cityInfo);
 
-      var navamsaPositions = calculateNavamsaPositions(planetaryPositions);
-      displayNavamsaChart(navamsaPositions, dateData);
+  // 4. Add Maanti position
+  addMaantiPosition(
+    planetaryPositions,
+    { year, month, day, hour, minutes, city },
+    planetaryPositions
+  );
 
-      displayPlanetaryTable(planetaryPositions, planetaryPositionsLater);
+  // 5. Compute positions 12 hours later for retrograde check
+  const halfDayInCenturies = 0.5 / 36525;
+  const planetaryPositionsLater = calculatePlanetaryPositions(
+    dateData.t + halfDayInCenturies,
+    timeData,
+    cityInfo
+  );
 
-      displayDashas(planetaryPositions, dateData.jd);
-    }
+  // 6. Display charts and tables
+  displayChart(planetaryPositions, year, month, day, hour, minutes);
+  const navamsaPositions = calculateNavamsaPositions(planetaryPositions);
+  displayNavamsaChart(navamsaPositions, dateData);
+  displayVedicInfo(year, month, day, hour, minutes, city);
+  displayPlanetaryTable(planetaryPositions, planetaryPositionsLater);
+  displayDashas(planetaryPositions, dateData.jd);
+}
+
+// Helper to compute and append Maanti
+function addMaantiPosition(targetArray, birthInfo, positions) {
+  const { year, month, day, hour, minutes, city } = birthInfo;
+  const { sunriseMinutes, sunsetMinutes } = getLocalSunriseSunset(year, month, day, city);
+  const birthMin = hour * 60 + minutes;
+  const calendarWeekday = new Date(year, month - 1, day).getDay();
+
+  // Determine Vedic weekday index and period
+  let vedicWeekday = calendarWeekday;
+  let period = 'night';
+
+  if (birthMin >= sunriseMinutes && birthMin < sunsetMinutes) {
+    period = 'day';
+  } else if (birthMin < sunriseMinutes) {
+    vedicWeekday = (calendarWeekday + 6) % 7;
+  }
+
+  // Lookup offset and compute longitude
+  const offset = MAANTI_OFFSETS[vedicWeekday][period];
+  const sun = positions.find(p => p.name === 'சூரியன்');
+  if (!sun) return;
+
+  const rawLong = (sun.longitude + offset) % 360;
+  const maantiLong = (rawLong + 360) % 360; // ensure positive
+
+  // Derive nakshatra, sign, pada, lord, and house
+  const nak = calculateNakshatraPada(maantiLong);
+  const signIdx = Math.floor(maantiLong / 30);
+
+  // Calculate house number from ascendant sign
+  // first find the ascendant’s longitude
+  const asc = positions.find(p => p.name === 'லக்னம்');
+  const ascSignIdx = Math.floor(asc.longitude / 30);
+  const houseNum = ((signIdx - ascSignIdx + 12) % 12) + 1;
+
+  targetArray.push({
+    name: 'மாந்தி',
+    longitude: Number(maantiLong.toFixed(1)),
+    zodiacSign: indianZodiacTamil[signIdx],
+    nakshatraPada: `${nak.nakshatra} ${nak.pada}`,
+    nakshatraLord: nakshatraLordsTamil[Math.floor(maantiLong / 13.333)],
+    houseNumber: houseNum
+  });
+}
 
     // Extract and adjust time data
-    function extractTimeData(hour, minutes, cityInfo) {
-      var zoneHours = parseFloat(cityInfo.timezone.hours) +
-                      parseFloat(cityInfo.timezone.minutes / 60);
-      if (cityInfo.timezone.direction === 'E') {
-        zoneHours *= -1;
-      }
-      var time = parseFloat(hour) + parseFloat(minutes / 60) + zoneHours;
-      return { time: time, zoneHours: zoneHours };
-    }
+function extractTimeData(hour, minutes, cityInfo) {
+  var zoneHours = parseFloat(cityInfo.timezone.hours) +
+                  parseFloat(cityInfo.timezone.minutes / 60);
+  if (cityInfo.timezone.direction === 'E') {
+    zoneHours *= -1;  
+  }
+  var time = parseFloat(hour) + parseFloat(minutes / 60) + zoneHours;
+  return { time: time, zoneHours: zoneHours };
+}
 
     // Calculate Julian date/time factor
     function calculateDateData(year, month, day, time) {
@@ -230,7 +313,7 @@
 <body>
   <!-- Centered Ganesha image and requested verse lines -->
   <div class="ganesha-section">
-    <img src="ganesha.webp" alt="Ganesha">
+    <img src="ganesha.jpg" alt="Ganesha">
     <p>
       || தத்துவ நிலையைத் தந்தெனை ஆண்ட<br>
       வித்தக விநாயக நின் விரைகழல் சரணே ||
@@ -306,28 +389,83 @@
 <div class="form-control">
   <label for="city">City:</label>
   <select id="city">
+	<!-- Tamilnadu district, taluk headquaters -->
+	<option value="Arakkonam">Arakkonam</option>
+    <option value="Ariyalur">Ariyalur</option>
+	<option value="Aruppukottai">Aruppukottai</option>
     <option value="Chennai">Chennai</option>
-    <option value="Tiruchirappalli">Tiruchirappalli</option>
-    <option value="Madurai">Madurai</option>
-    <option value="Vellore">Vellore</option>
-    <option value="Salem">Salem</option>
+	<option value="Cheyyaru">Cheyyaru</option>
+	<option value="Chengalpattu">Chengalpattu</option>
     <option value="Coimbatore">Coimbatore</option>
-    <option value="Krishnagiri">Krishnagiri</option>
-    <option value="Tirunelveli">Tirunelveli</option>
+	<option value="Cuddalore">Cuddalore</option>
+	<option value="Dharmapuri">Dharmapuri</option>
+	<option value="Dindigul">Dindigul</option>
+	<option value="Erode">Erode</option>
+	<option value="Gobichettipalayam">Gobichettipalayam</option>
+	<option value="Kallakurichi">Kallakurichi</option>
+	<option value="Kancheepuram">Kancheepuram</option>
+	<option value="Karur">Karur</option>
     <option value="Kanyakumari">Kanyakumari</option>
+	<option value="Kovilpatti">Kovilpatti</option>	
+	<option value="Krishnagiri">Krishnagiri</option>
+    <option value="Madurai">Madurai</option>
+	<option value="Madurantakam">Madurantakam</option>
+	<option value="Mayiladuthurai">Mayiladuthurai</option>
+	<option value="Mettur">Mettur</option>	
+	<option value="Musiri">Musiri</option>	
+	<option value="Nagercoil">Nagercoil</option>
+	<option value="Nagapattinam">Nagapattinam</option>
+	<option value="Namakkal">Namakkal</option>
+	<option value="Oddanchatram">Oddanchatram</option>
+	<option value="Ooty">Ooty</option>
+	<option value="Palani">Palani</option>
+	<option value="Paramakudi">Paramakudi</option>
+	<option value="Perambalur">Perambalur</option>
+    <option value="Pondichery">Pondichery</option>
+	<option value="Pudukkottai">Pudukkottai</option>
+	<option value="Rajapalayam">Rajapalayam</option>
+    <option value="Ramanathapuram">Ramanathapuram</option>
+	<option value="Ranipet">Ranipet</option>
+    <option value="Salem">Salem</option>
+    <option value="Sattur">Sattur</option>
+	<option value="Sivaganga">Sivaganga</option>
+	<option value="Tenkasi">Tenkasi</option>
+	<option value="Thanjavur">Thanjavur</option>    
+	<option value="Thiruvananthapuram">Thiruvananthapuram</option>
+	<option value="Thiruvallur">Thiruvallur</option>	
+	<option value="Theni">Theni</option>
+    <option value="Tiruchirappalli">Tiruchirappalli</option>
+	<option value="Tiruvannamalai">Tiruvannamalai</option>		
+    <option value="Tirunelveli">Tirunelveli</option>
+	<option value="Tirupathur">Tirupathur</option>
+	<option value="Tiruppur">Tiruppur</option>
+	<option value="Tiruvarur">Tiruvarur</option>
+	<option value="Tuticorin">Tuticorin</option>	
+	<option value="Udumalaipettai">Udumalaipettai</option>	
+    <option value="Vellore">Vellore</option>
+	<option value="Viluppuram">Viluppuram</option>	
+	<option value="Virudhunagar">Virudhunagar</option>
+    <!-- Other Indian Cities -->
+	<option value="Bengaluru">Bengaluru</option>
     <option value="Hyderabad">Hyderabad</option>
-    <option value="Bengaluru">Bengaluru</option>
-    <option value="Thiruvananthapuram">Thiruvananthapuram</option>
-    <option value="New Delhi">New Delhi</option>
-    <option value="Mumbai">Mumbai</option>
     <option value="Kolkata">Kolkata</option>
+    <option value="Mumbai">Mumbai</option>
+    <option value="New Delhi">New Delhi</option>
     <option value="London">London</option>
-    <option value="New York, NY">New York</option>
+   	<!-- USA -->
+	<option value="New York, NY">New York</option>
     <option value="Westlake, OH">Westlake</option>
     <option value="San Francisco, CA">San Francisco</option>
     <option value="Chicago, IL">Chicago</option>
     <option value="Houston, TX">Houston</option>
     <option value="Phoenix, AZ">Phoenix</option>
+	<option value="Mecklenburg County, NC">Mecklenburg County</option>		
+	<!-- Gulf Region / UAE -->
+	<option value="Sharjah, UAE">Sharjah</option>
+    <!-- Srilanka -->
+	<option value="Colombo">Colombo</option>
+    <option value="Kandy">Kandy</option>
+	<option value="Trincomalee">Trincomalee</option>
   </select>
 </div>
 
@@ -345,6 +483,9 @@
       <!-- SVG Navamsa chart inserted here -->
     </div>
   </div>
+  <div id="vedicInfo" style="text-align:center; margin-top:20px; font-size:16px; font-family:Arial, sans-serif;">
+  </div>
+
 
 <div class="result-dasha-container">
   <div id="result"></div>
